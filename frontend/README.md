@@ -1,25 +1,25 @@
-# LLMViewer Frontend
+# LLMViewer 前端
 
-This project uses Vue 3 in Vite.
+本项目基于 Vite 使用 Vue 3 开发。
 
-## Project Setup
+## 项目安装
 
 ```sh
 npm install
 ```
 
-### Compile and Hot-Reload for Development
+### 开发环境编译与热重载
 
 ```sh
 npm run dev
 ```
-or
+或者：
 ```sh
 npm run build
 npm run preview
 ```
 
-### Compile and Minify for Production
+### 生产环境构建与压缩
 
 ```sh
 npm run build

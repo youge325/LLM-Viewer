@@ -42,7 +42,7 @@ def get_quant_bit(dtype):
         bitwidth = int(re.findall(r"\d+", dtype)[0])
         return bitwidth
     else:
-        raise ValueError(f"Unsupported dtype:{dtype}")
+        raise ValueError(f"不支持的数据类型: {dtype}")
 
 
 def get_model_graph(model_id, hardware, config_path, inference_config):

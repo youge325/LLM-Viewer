@@ -6,25 +6,25 @@ import importlib
 import argparse
 
 parser = argparse.ArgumentParser()
-parser.add_argument("model_id", type=str, help="model id")
+parser.add_argument("model_id", type=str, help="模型 ID")
 parser.add_argument(
     "hardware",
     type=str,
-    help="name of hardware, for example nvidia_V100 or nvidia_A6000",
+    help="硬件名称，例如 nvidia_V100 或 nvidia_A6000",
 )
-parser.add_argument("--config_file", type=str, default=None, help="config file")
-parser.add_argument("--batchsize", type=int, default=1, help="batch size")
-parser.add_argument("--seqlen", type=int, default=1024, help="sequence length")
-parser.add_argument("--promptlen", type=int, default=128, help="prompt sequence length")
-parser.add_argument("--w_bit", type=int, default=16, help="weight bitwidth")
-parser.add_argument("--a_bit", type=int, default=16, help="temporary activation bitwidth")
-parser.add_argument("--kv_bit", type=int, default=16, help="kv cache bitwidth")
-parser.add_argument("--use_flashattention", action="store_true", help="use flash attention")
+parser.add_argument("--config_file", type=str, default=None, help="配置文件")
+parser.add_argument("--batchsize", type=int, default=1, help="批大小")
+parser.add_argument("--seqlen", type=int, default=1024, help="序列长度")
+parser.add_argument("--promptlen", type=int, default=128, help="提示序列长度")
+parser.add_argument("--w_bit", type=int, default=16, help="权重位宽")
+parser.add_argument("--a_bit", type=int, default=16, help="临时激活位宽")
+parser.add_argument("--kv_bit", type=int, default=16, help="KV Cache 位宽")
+parser.add_argument("--use_flashattention", action="store_true", help="使用 FlashAttention")
 parser.add_argument(
     "--tp-size",
     type=int,
     default=1,
-    help="the number of devices for tensor parallelism to use"
+    help="用于张量并行的设备数量"
 )
 args = parser.parse_args()
 
@@ -41,4 +41,4 @@ ret = analyzer.analyze_generate_task(
 )
 elapse = ret["inference_time"]
 prefill_elapse = ret["prefill_time"]
-print(f"{args.hardware}: 1st token latency {prefill_elapse:.2f}, total latency {elapse:.2f}, throughput {args.seqlen * args.batchsize / elapse:.2f} Token/sec")
+print(f"{args.hardware}: 首 token 延迟 {prefill_elapse:.2f}, 总延迟 {elapse:.2f}, 吞吐 {args.seqlen * args.batchsize / elapse:.2f} Token/sec")

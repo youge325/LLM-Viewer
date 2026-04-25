@@ -1,39 +1,39 @@
 <template>
-    <h2>Inference Config</h2>
+    <h2>推理配置</h2>
     <div class="config_div">
-        Stage:
+        阶段:
         <input type="radio" v-model="inference_stage" id="decode" value="decode" checked>
-        <label for="decode">Decode</label>
+        <label for="decode">解码</label>
         <input type="radio" v-model="inference_stage" id="prefill" value="prefill">
-        <label for="prefill">Prefill</label>
+        <label for="prefill">预填充</label>
         <input type="radio" v-model="inference_stage" id="chat" value="chat">
-        <label for="prefill">Chat</label>
+        <label for="prefill">对话</label>
     </div>
     <div class="config_div">
-        Batchsize:
+        批大小:
         <input type="range" min="1" max="256" value="1" v-model.lazy="batch_size">
         <input type="number" v-model.lazy="batch_size" min="1" max="256">
     </div>
     <!-- <div class="config_div" v-if="inference_stage!=chat"> -->
     <div class="config_div" v-if="inference_stage!='chat'">
-        SeqLength:
+        序列长度:
         <input type="range" min="1" max="4096" value="1024" v-model.lazy="seq_length">
         <!-- <span id="seq_length">1024</span> -->
         <input type="number" v-model.lazy="seq_length" min="1" max="4096">
     </div>
     <div class="config_div" v-else>
-        PromptLength:
+        提示长度:
         <input type="range" min="1" max="4096" value="1024" v-model.lazy="seq_length">
         <!-- <span id="seq_length">1024</span> -->
         <input type="number" v-model.lazy="seq_length" min="1" max="4096">
         <br/>
-        GenerateLength:
+        生成长度:
         <input type="range" min="1" max="4096" value="1024" v-model.lazy="gen_length">
         <!-- <span id="seq_length">1024</span> -->
         <input type="number" v-model.lazy="gen_length" min="1" max="4096">
     </div>
     <div class="config_div">
-        Tensor parallelism
+        张量并行
         <select v-model="tp_size">
             <option value="1">1</option>
             <option value="2">2</option>
@@ -46,9 +46,9 @@
         <input type="range" min="1" max="4096" value="1024" oninput="gen_length.innerText = this.value">
         <p id="gen_length">1</p>
     </div> -->
-    <h2>Optimization Config</h2>
+    <h2>优化配置</h2>
     <div class="config_div">
-        Weight Quantization:
+        权重量化:
         <select v-model="w_quant">
             <option value="FP16">FP16</option>
             <option value="8-bit">8-bit</option>
@@ -58,7 +58,7 @@
         </select>
     </div>
     <div class="config_div">
-        Activation Quantization
+        激活量化
         <select v-model="a_quant">
             <option value="FP16">FP16</option>
             <option value="8-bit">8-bit</option>
@@ -68,7 +68,7 @@
         </select>
     </div>
     <div class="config_div">
-        KV Cache Quantization
+        KV Cache 量化
         <select v-model="kv_quant">
             <option value="FP16">FP16</option>
             <option value="8-bit">8-bit</option>
@@ -78,7 +78,7 @@
         </select>
     </div>
     <div class="config_div">
-        Use FlashAttention
+        使用 FlashAttention
         <input type="checkbox" v-model="use_flashattention">
     </div>
 
@@ -92,7 +92,7 @@
             <option value="Greedy">Greedy</option>
         </select>
     </div> -->
-    <h2>Network-wise Analysis</h2>
+    <h2>网络级分析</h2>
     <div>
         <h3>{{ inference_stage }}</h3>
         <div v-for="(value, key) in total_results[inference_stage]" :key="key" class="network-wise-info-item">
@@ -100,9 +100,9 @@
             <span v-else-if="['inference_time'].includes(key)">{{ key }}: {{ strNumberTime(value) }}</span>
             <span v-else>{{ key }}: {{ strNumber(value) }}</span>
         </div>
-        <p>NOTE: The time estimated by the roofline model represents the theoretical performance that the hardware can achieve. 
-        The purpose of creating this tool is to help readers gain a clearer understanding of the key factors that influence LLM inference. 
-        Only the relative relationships can be referenced. </p>
+        <p>注意：Roofline 模型估计的是硬件理论可达到的性能上限。
+        本工具旨在帮助读者更清晰地理解影响 LLM 推理的关键因素。
+        结果主要用于相对关系分析。</p>
         
     </div>
     <!-- <div v-if="inference_stage=='prefill'">

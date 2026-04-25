@@ -6,7 +6,7 @@
         <div id="graphContainer" @resize="handleResize"></div>
 
         <div class="float-search-window">
-            <input type="text" v-model.lazy="searchText" placeholder="Search" />
+            <input type="text" v-model.lazy="searchText" placeholder="搜索" />
             <div>
                 <div v-for="(value) in searchResult" @click="SelectNode(value, true)">
                     {{ value }}
@@ -83,7 +83,7 @@ window.onresize = () => {
 function graphUpdate() {
     const url = 'http://' + ip_port.value + '/get_graph'
     console.log("graphUpdate", url)
-    info_window_str.value="Loading from server..."
+    info_window_str.value="正在从服务器加载..."
     var is_init=false
     axios.post(url, { model_id: model_id.value, hardware: hardware.value, inference_config: global_inference_config.value }).then(function (response) {
         console.log(response);
@@ -124,7 +124,7 @@ function graphUpdate() {
 
     })
         .catch(function (error) {
-            info_window_str.value="Error in get_graph"
+            info_window_str.value="获取图数据失败"
             console.log("error in graphUpdate");
             console.log(error);
         });
@@ -218,7 +218,7 @@ function update_roofline_model() {
                                 borderDash: [5, 5], // 虚线样式
                                 label: {
                                     enabled: true,
-                                    content: 'Node AI',
+                                    content: '节点算术强度',
                                     position: 'top'
                                 }
                             }
@@ -255,7 +255,7 @@ function update_roofline_model() {
                     x: {
                         title: {
                             display: true,
-                            text: 'Arithmetic Intensity (OPs/byte)'
+                            text: '算术强度 (OPs/byte)'
                         },
                         type: 'linear',
                         ticks: {
@@ -269,7 +269,7 @@ function update_roofline_model() {
                     y: {
                         title: {
                             display: true,
-                            text: 'Performance (OPS)'
+                            text: '性能 (OPS)'
                         },
                         ticks: {
                             callback: function (value, index, values) {
@@ -283,7 +283,7 @@ function update_roofline_model() {
                 plugins: {
                     title: {
                         display: true,
-                        text: 'Roofline Model', // 这里是你想要的标题
+                        text: 'Roofline 模型',
                         position: 'top' // 标题的位置，可以是'top', 'left', 'bottom', 或 'right'
                     },
                     legend: {

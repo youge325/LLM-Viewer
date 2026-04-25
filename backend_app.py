@@ -39,9 +39,9 @@ def get_avaliable():
 
 if __name__ == "__main__":
     parser=argparse.ArgumentParser()
-    parser.add_argument("--port", type=int, default=5000)
-    parser.add_argument("--local", action="store_true")
-    parser.add_argument("--debug", action="store_true")
+    parser.add_argument("--port", type=int, default=5000, help="服务端口")
+    parser.add_argument("--local", action="store_true", help="仅监听本地回环地址")
+    parser.add_argument("--debug", action="store_true", help="开启调试模式")
     args=parser.parse_args()
     host="127.0.0.1" if args.local else "0.0.0.0"
     app.run(debug=args.debug,host=host,port=args.port)

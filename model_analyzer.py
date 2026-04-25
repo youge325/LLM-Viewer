@@ -34,7 +34,7 @@ class ModelAnalyzer:
                     config_file = "configs/" + file
                 # print(f"auto search config file {config_file} {file} {model_id}")
         assert config_file is not None, "config file is not found, please specify it manually."
-        print(f"use config file {config_file} for {model_id}")
+        print(f"使用配置文件 {config_file} 处理 {model_id}")
         if source == "huggingface":
             self.model_params = AutoConfig.from_pretrained(model_id, trust_remote_code=True)
         else:
@@ -92,7 +92,7 @@ class ModelAnalyzer:
 
         decode_file_name = f"{save_path}_decode.csv"
         prefill_file_name = f"{save_path}_prefill.csv"
-        print(f"save to {decode_file_name} and {prefill_file_name}")
+        print(f"保存到 {decode_file_name} 和 {prefill_file_name}")
 
         for file_name, stage in [
             (decode_file_name, "decode"),
