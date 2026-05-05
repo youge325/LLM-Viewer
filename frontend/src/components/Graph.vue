@@ -269,7 +269,7 @@ function update_roofline_model() {
                     y: {
                         title: {
                             display: true,
-                            text: '性能 (OPS)'
+                            text: 'Performance (OPS)'
                         },
                         ticks: {
                             callback: function (value, index, values) {
