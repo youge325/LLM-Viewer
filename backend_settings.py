@@ -6,6 +6,7 @@ avaliable_model_ids_sources = {
     "meta-llama/Llama-2-70b-hf": {"source": "huggingface"},
     "EleutherAI/gpt-j-6B":{"source": "huggingface"},
     "THUDM/chatglm3-6b": {"source": "huggingface"},
+    "zai-org/GLM-4.5": {"source": "huggingface", "config_file": "configs/glm4_moe.py"},
     "facebook/opt-125m": {"source": "huggingface"},
     "facebook/opt-1.3b": {"source": "huggingface"},
     "facebook/opt-2.7b": {"source": "huggingface"},

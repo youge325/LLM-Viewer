@@ -12,6 +12,8 @@ config_cache = {}
 
 
 def get_analyer(model_id, hardware, config_path) -> ModelAnalyzer:
+    if config_path is None and "config_file" in avaliable_model_ids_sources[model_id]:
+        config_path = avaliable_model_ids_sources[model_id]["config_file"]
     config = f"{model_id}_{hardware}_{config_path}"
     if config not in config_cache:
         config_cache[config] = ModelAnalyzer(

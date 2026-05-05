@@ -39,7 +39,7 @@ def get_avaliable():
 
 if __name__ == "__main__":
     parser=argparse.ArgumentParser()
-    parser.add_argument("--port", type=int, default=5000, help="服务端口")
+    parser.add_argument("--port", type=int, default=5050, help="服务端口")
     parser.add_argument("--local", action="store_true", help="仅监听本地回环地址")
     parser.add_argument("--debug", action="store_true", help="开启调试模式")
     args=parser.parse_args()
