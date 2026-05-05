@@ -14,6 +14,8 @@ avaliable_model_ids_sources = {
     "zai-org/GLM-5.1": {"source": "huggingface", "config_file": "configs/moe_dsa.py"},
     "deepseek-ai/DeepSeek-V3.1": {"source": "huggingface", "config_file": "configs/moe_dsa.py"},
     "deepseek-ai/DeepSeek-R1": {"source": "huggingface", "config_file": "configs/moe_dsa.py"},
+    "deepseek-ai/DeepSeek-V4-Pro": {"source": "huggingface", "config_file": "configs/deepseek_v4.py"},
+    "deepseek-ai/DeepSeek-V4-Flash": {"source": "huggingface", "config_file": "configs/deepseek_v4.py"},
     "facebook/opt-125m": {"source": "huggingface"},
     "facebook/opt-1.3b": {"source": "huggingface"},
     "facebook/opt-2.7b": {"source": "huggingface"},
