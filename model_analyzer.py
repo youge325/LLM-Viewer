@@ -304,25 +304,33 @@ class ModelAnalyzer:
                 store_kv_cache=0,
             )
 
-        for name in ["attn_add", "mlp_add"]:
+        if hasattr(config, "get_add_layers"):
+            add_layers = config.get_add_layers(model_params)
+        else:
+            add_layers = {"attn_add": hidden_size, "mlp_add": hidden_size}
+        for name, size in add_layers.items():
             self._analyze_to_results(
                 "decode",
                 name,
-                OPs=batchsize * hidden_size * 1,
+                OPs=batchsize * size * 1,
                 load_weight=0,
-                load_act=batchsize * hidden_size * 1 * a_byte,
-                store_act=batchsize * hidden_size * 1 * a_byte,
+                load_act=batchsize * size * 1 * a_byte,
+                store_act=batchsize * size * 1 * a_byte,
                 load_kv_cache=0,
                 store_kv_cache=0,
             )
-        for name in ["mlp_act"]:
+        if hasattr(config, "get_act_layers"):
+            act_layers = config.get_act_layers(model_params)
+        else:
+            act_layers = {"mlp_act": hidden_size}
+        for name, size in act_layers.items():
             self._analyze_to_results(
                 "decode",
                 name,
-                OPs=batchsize * hidden_size * 1 * 2,
+                OPs=batchsize * size * 1 * 2,
                 load_weight=0,
-                load_act=batchsize * hidden_size * 1 * a_byte * 2,
-                store_act=batchsize * hidden_size * 1 * a_byte,
+                load_act=batchsize * size * 1 * a_byte * 2,
+                store_act=batchsize * size * 1 * a_byte,
                 load_kv_cache=0,
                 store_kv_cache=0,
             )
@@ -394,25 +402,25 @@ class ModelAnalyzer:
                 load_kv_cache=0,
                 store_kv_cache=0,
             )
-        for name in ["attn_add", "mlp_add"]:
+        for name, size in add_layers.items():
             self._analyze_to_results(
                 "prefill",
                 name,
-                OPs=batchsize * hidden_size * seqlen * 1,
+                OPs=batchsize * size * seqlen * 1,
                 load_weight=0,
-                load_act=batchsize * hidden_size * seqlen * a_byte,
-                store_act=batchsize * hidden_size * seqlen * a_byte,
+                load_act=batchsize * size * seqlen * a_byte,
+                store_act=batchsize * size * seqlen * a_byte,
                 load_kv_cache=0,
                 store_kv_cache=0,
             )
-        for name in ["mlp_act"]:
+        for name, size in act_layers.items():
             self._analyze_to_results(
                 "prefill",
                 name,
-                OPs=batchsize * hidden_size * seqlen * 1 * 2,
+                OPs=batchsize * size * seqlen * 1 * 2,
                 load_weight=0,
-                load_act=batchsize * hidden_size * seqlen * a_byte * 2,
-                store_act=batchsize * hidden_size * seqlen * a_byte,
+                load_act=batchsize * size * seqlen * a_byte * 2,
+                store_act=batchsize * size * seqlen * a_byte,
                 load_kv_cache=0,
                 store_kv_cache=0,
             )
