@@ -23,7 +23,10 @@ def get_vocab_size(model_params):
 
 
 def get_norm_layers(model_params):
-    return ["attn_norm", "q_a_norm", "kv_a_norm", "mlp_norm"]
+    has_indexer = getattr(model_params, "index_n_heads", 0) > 0
+    if has_indexer:
+        return ["attn_norm", "q_a_norm", "kv_a_norm", "mlp_norm"]
+    return ["attn_norm", "mlp_norm"]
 
 
 # ── MLA 专用 hooks ──────────────────────────────────────────
@@ -95,8 +98,6 @@ def get_linear_layers(model_params, tp_size: int):
     qk_nope = getattr(model_params, "qk_nope_head_dim")
     qk_rope = getattr(model_params, "qk_rope_head_dim")
     v_dim = getattr(model_params, "v_head_dim")
-    idx_n = getattr(model_params, "index_n_heads")
-    idx_d = getattr(model_params, "index_head_dim")
 
     routed = getattr(model_params, "num_experts_per_tok", 1) * getattr(model_params, "moe_intermediate_size")
     shared = getattr(model_params, "n_shared_experts", 0) * getattr(model_params, "intermediate_size")
@@ -107,26 +108,18 @@ def get_linear_layers(model_params, tp_size: int):
     kv_out_dim = n_heads * (qk_nope + v_dim)
     o_in_dim = n_heads * v_dim
 
-    # Indexer
-    idx_q_out = idx_n * idx_d
-
     if tp_size > 1:
         assert q_out_dim % tp_size == 0
         assert kv_out_dim % tp_size == 0
         assert o_in_dim % tp_size == 0
-        assert idx_q_out % tp_size == 0
 
-    return {
+    layers = {
         # MLA
         "q_a_proj": [h, q_lora],
         "q_b_proj": [q_lora, q_out_dim // tp_size],
         "kv_a_proj_with_mqa": [h, kv_lora + qk_rope],
         "kv_b_proj": [kv_lora, kv_out_dim // tp_size],
         "out_proj": [o_in_dim // tp_size, h],
-        # Sparse Indexer
-        "indexer_q_proj": [q_lora, idx_q_out // tp_size],
-        "indexer_k_proj": [h, idx_d],
-        "indexer_weights_proj": [h, idx_n],
         # MoE
         "router": [h, n_routed_experts],
         "moe_gate_proj": [h, routed // tp_size],
@@ -137,65 +130,102 @@ def get_linear_layers(model_params, tp_size: int):
         "shared_down_proj": [shared // tp_size, h],
     }
 
+    # Sparse Indexer（可选，如 GLM-5 系列有，DeepSeek-V3 系列无）
+    idx_n = getattr(model_params, "index_n_heads", 0)
+    idx_d = getattr(model_params, "index_head_dim", 0)
+    if idx_n > 0 and idx_d > 0:
+        idx_q_out = idx_n * idx_d
+        if tp_size > 1:
+            assert idx_q_out % tp_size == 0
+        layers["indexer_q_proj"] = [q_lora, idx_q_out // tp_size]
+        layers["indexer_k_proj"] = [h, idx_d]
 
-# ── 计算图 ───────────────────────────────────────────────────
+    return layers
 
-transformer_layer_graph = {
-    "input": [],
-    "attn_norm": ["input"],
-    "q_a_proj": ["attn_norm"],
-    "q_a_norm": ["q_a_proj"],
-    "indexer_q_proj": ["q_a_norm"],
-    "indexer_k_proj": ["attn_norm"],
-    "q_b_proj": ["q_a_norm"],
-    "kv_a_proj_with_mqa": ["attn_norm"],
-    "kv_a_norm": ["kv_a_proj_with_mqa"],
-    "kv_b_proj": ["kv_a_norm"],
-    "qk_matmul": ["q_b_proj", "kv_b_proj"],
-    "softmax": ["qk_matmul"],
-    "sv_matmul": ["softmax", "kv_b_proj"],
-    "out_proj": ["sv_matmul"],
-    "attn_add": ["input", "out_proj"],
-    "mlp_norm": ["attn_add"],
-    "router": ["mlp_norm"],
-    "moe_gate_proj": ["mlp_norm", "router"],
-    "moe_up_proj": ["mlp_norm", "router"],
-    "moe_mlp_act": ["moe_up_proj", "moe_gate_proj"],
-    "moe_down_proj": ["moe_mlp_act"],
-    "shared_gate_proj": ["mlp_norm"],
-    "shared_up_proj": ["mlp_norm"],
-    "shared_mlp_act": ["shared_up_proj", "shared_gate_proj"],
-    "shared_down_proj": ["shared_mlp_act"],
-    "moe_combine": ["moe_down_proj", "shared_down_proj"],
-    "mlp_add": ["attn_add", "moe_combine"],
-    "output": ["mlp_add"],
-}
 
-flashattention_transformer_layer_graph = {
-    "input": [],
-    "attn_norm": ["input"],
-    "q_a_proj": ["attn_norm"],
-    "q_a_norm": ["q_a_proj"],
-    "indexer_q_proj": ["q_a_norm"],
-    "indexer_k_proj": ["attn_norm"],
-    "q_b_proj": ["q_a_norm"],
-    "kv_a_proj_with_mqa": ["attn_norm"],
-    "kv_a_norm": ["kv_a_proj_with_mqa"],
-    "kv_b_proj": ["kv_a_norm"],
-    "fused_attention": ["q_b_proj", "kv_b_proj"],
-    "out_proj": ["fused_attention"],
-    "attn_add": ["input", "out_proj"],
-    "mlp_norm": ["attn_add"],
-    "router": ["mlp_norm"],
-    "moe_gate_proj": ["mlp_norm", "router"],
-    "moe_up_proj": ["mlp_norm", "router"],
-    "moe_mlp_act": ["moe_up_proj", "moe_gate_proj"],
-    "moe_down_proj": ["moe_mlp_act"],
-    "shared_gate_proj": ["mlp_norm"],
-    "shared_up_proj": ["mlp_norm"],
-    "shared_mlp_act": ["shared_up_proj", "shared_gate_proj"],
-    "shared_down_proj": ["shared_mlp_act"],
-    "moe_combine": ["moe_down_proj", "shared_down_proj"],
-    "mlp_add": ["attn_add", "moe_combine"],
-    "output": ["mlp_add"],
-}
+# ── 动态计算图 ───────────────────────────────────────────────
+
+def _build_base_graph(attn_node):
+    """无 indexer 的基础图（DeepSeek-V3 系列用）。"""
+    return {
+        "input": [],
+        "attn_norm": ["input"],
+        "q_a_proj": ["attn_norm"],
+        "q_b_proj": ["q_a_proj"],
+        "kv_a_proj_with_mqa": ["attn_norm"],
+        "kv_b_proj": ["kv_a_proj_with_mqa"],
+        attn_node: ["q_b_proj", "kv_b_proj"],
+        "out_proj": [attn_node],
+        "attn_add": ["input", "out_proj"],
+        "mlp_norm": ["attn_add"],
+        "router": ["mlp_norm"],
+        "moe_gate_proj": ["mlp_norm", "router"],
+        "moe_up_proj": ["mlp_norm", "router"],
+        "moe_mlp_act": ["moe_up_proj", "moe_gate_proj"],
+        "moe_down_proj": ["moe_mlp_act"],
+        "shared_gate_proj": ["mlp_norm"],
+        "shared_up_proj": ["mlp_norm"],
+        "shared_mlp_act": ["shared_up_proj", "shared_gate_proj"],
+        "shared_down_proj": ["shared_mlp_act"],
+        "moe_combine": ["moe_down_proj", "shared_down_proj"],
+        "mlp_add": ["attn_add", "moe_combine"],
+        "output": ["mlp_add"],
+    }
+
+
+def _build_full_graph(attn_node):
+    """带 indexer + norm 的完整图（GLM-5 系列用）。"""
+    return {
+        "input": [],
+        "attn_norm": ["input"],
+        "q_a_proj": ["attn_norm"],
+        "q_a_norm": ["q_a_proj"],
+        "indexer_q_proj": ["q_a_norm"],
+        "indexer_k_proj": ["attn_norm"],
+        "q_b_proj": ["q_a_norm"],
+        "kv_a_proj_with_mqa": ["attn_norm"],
+        "kv_a_norm": ["kv_a_proj_with_mqa"],
+        "kv_b_proj": ["kv_a_norm"],
+        attn_node: ["q_b_proj", "kv_b_proj"],
+        "out_proj": [attn_node],
+        "attn_add": ["input", "out_proj"],
+        "mlp_norm": ["attn_add"],
+        "router": ["mlp_norm"],
+        "moe_gate_proj": ["mlp_norm", "router"],
+        "moe_up_proj": ["mlp_norm", "router"],
+        "moe_mlp_act": ["moe_up_proj", "moe_gate_proj"],
+        "moe_down_proj": ["moe_mlp_act"],
+        "shared_gate_proj": ["mlp_norm"],
+        "shared_up_proj": ["mlp_norm"],
+        "shared_mlp_act": ["shared_up_proj", "shared_gate_proj"],
+        "shared_down_proj": ["shared_mlp_act"],
+        "moe_combine": ["moe_down_proj", "shared_down_proj"],
+        "mlp_add": ["attn_add", "moe_combine"],
+        "output": ["mlp_add"],
+    }
+
+
+def get_graph(model_params, use_flashattention=False):
+    """model_analyzer.py 调用此方法获取动态计算图。"""
+    has_indexer = getattr(model_params, "index_n_heads", 0) > 0
+    attn_node = "fused_attention" if use_flashattention else "qk_matmul"
+    if has_indexer:
+        # GLM-5 系列有 indexer，使用完整图
+        graph = _build_full_graph(attn_node)
+        if not use_flashattention:
+            graph["softmax"] = ["qk_matmul"]
+            graph["sv_matmul"] = ["softmax", "kv_b_proj"]
+            graph["out_proj"] = ["sv_matmul"]
+    else:
+        # DeepSeek-V3 系列无 indexer，使用基础图
+        graph = _build_base_graph(attn_node)
+        if not use_flashattention:
+            graph["softmax"] = ["qk_matmul"]
+            graph["sv_matmul"] = ["softmax", "kv_b_proj"]
+            graph["out_proj"] = ["sv_matmul"]
+    return graph
+
+
+# 保留兼容性：model_analyzer.py 在旧路径下仍可直接访问
+transformer_layer_graph = _build_base_graph("qk_matmul")
+flashattention_transformer_layer_graph = _build_base_graph("fused_attention")

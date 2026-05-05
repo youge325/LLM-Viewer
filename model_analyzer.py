@@ -53,6 +53,16 @@ class ModelAnalyzer:
         self.batchsize = None
         self.seqlen = None
 
+    def get_layer_graph(self, use_flashattention=False):
+        """获取当前模型配置的计算图。优先调用 config 的 get_graph 方法（支持动态图）。"""
+        config = self.config
+        model_params = self.model_params
+        if hasattr(config, "get_graph"):
+            return config.get_graph(model_params, use_flashattention)
+        if use_flashattention:
+            return config.flashattention_transformer_layer_graph
+        return config.transformer_layer_graph
+
     def _analyze_to_results(
         self,
         stage,
