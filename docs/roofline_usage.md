@@ -1,6 +1,6 @@
 # RoofLine 模型使用文档
 
-本文档系统说明 LLM-Viewer 中 RoofLine 模型的四种使用方式：CLI 单层分析、CLI 完整生成任务、Web UI、以及二次开发直接调用 `roofline_analyze`。所有内容均与仓库当前源码一一对应，引用处给出文件与行号，方便对照查证。
+本文档系统讲解 LLM-Viewer 中 RoofLine 模型的**原理**与**解读方法**：核心函数语义、推理三阶段（prefill / decode / chat）对每个节点算术强度的影响、CSV 输出字段含义、所支持的硬件与模型清单、以及二次开发直接调用 `roofline_analyze` 的方式。所有内容均与仓库当前源码一一对应，引用处给出文件与行号，方便对照查证。
 
 ---
 
@@ -57,192 +57,131 @@ LLM-Viewer 在 RoofLine 之上构建了完整的 LLM 推理性能分析流水线
 
 ---
 
-## 2. 安装与依赖
+## 2. 推理阶段对算术强度的影响
 
-### 2.1 Python 依赖
+LLM-Viewer 把一次 LLM 推理拆分为三个阶段：**prefill（预填充）**、**decode（解码）**、**chat（对话）**。在 Web UI 中切换阶段，每个节点的算术强度（即 RoofLine 图上代表该节点的虚线位置）会重新计算。但**不同类型的算子受阶段切换的影响差异巨大**——这一节给出每类算子的敏感度。
 
-```bash
-pip install transformers flask flask_cors easydict
+### 2.1 三个阶段的本质区别
+
+源码：算子定义在 [model_analyzer.py:228-450](../model_analyzer.py#L228-L450)，chat 合成逻辑在 [get_model_graph.py:120-144](../get_model_graph.py#L120-L144)。
+
+| 阶段 | Q 长度 | KV Cache 行为 | 适用场景 |
+|---|---|---|---|
+| **Prefill** | `seqlen` | 写入新 K/V，不读历史 | 处理用户 prompt |
+| **Decode** | `1` | 读取完整历史 K/V，仅追加 1 个 token | 自回归逐 token 生成 |
+| **Chat** | 混合 | 混合 | 模拟"prefill + 多步 decode"的端到端对话 |
+
+### 2.2 四类算子的阶段敏感度
+
+按算术强度（AI = OPs / memory_access）对阶段切换的敏感度由强到弱排列。
+
+#### 公式中变量约定
+
+下面所有表格的公式中出现的简写，含义如下（对应 [model_analyzer.py:199-224](../model_analyzer.py#L199-L224) 中的实际变量名）：
+
+| 简写 | 源码变量 | 含义 |
+|---|---|---|
+| `ic` | `ic` | **input channels**：当前 Linear 层的输入维度（如 Llama-2-7B 的 `q_proj` 层输入 = 4096） |
+| `oc` | `oc` | **output channels**：当前 Linear 层的输出维度（如 `q_proj` 层输出 = 4096） |
+| `bs` | `batchsize` | 批大小，CLI 参数 `--batchsize` |
+| `seqlen` | `seqlen` | 序列长度，CLI 参数 `--seqlen`（prefill 中是 prompt 长度，decode 中是已生成的 token 数） |
+| `hidden` | `hidden_size` | Transformer 隐藏层维度（与 `ic`、`oc` 在大多数主干 Linear 上相等） |
+| `num_heads` | `num_attention_heads` | Attention head 数 |
+| `qk_head_size` | `qk_head_size` | 每个 head 中 Q/K 的维度 = `hidden / num_heads` |
+| `v_head_size` | `v_head_size` | 每个 head 中 V 的维度（GQA/MQA 情况下可能与 `qk_head_size` 不同） |
+| `w_byte` | `self.w_bit / 8` | 权重每元素字节数（FP16 → 2，INT8 → 1，INT4 → 0.5） |
+| `a_byte` | `self.a_bit / 8` | 激活每元素字节数 |
+| `kv_byte` | `self.kv_bit / 8` | KV Cache 每元素字节数 |
+
+> 公式末尾常见的 `× 2` 因子来自"一次乘加（multiply-add）算作 2 个 OP"的约定；LayerNorm 中的 `× 7` 来自 softmax 那段注释里 `max → sub → exp → sum → div → mul → add` 共 7 个逐元素操作。
+
+#### ① Linear 层（QKV / Output / MLP 投影）— 影响巨大
+
+源码：[model_analyzer.py:228-248](../model_analyzer.py#L228-L248)
+
+| 阶段 | OPs | 关键访存（权重） | 算术强度近似 |
+|---|---|---|---|
+| Prefill | `ic × oc × bs × seqlen × 2` | `ic × oc × w_byte` | **`2 × bs × seqlen / w_byte`** |
+| Decode | `ic × oc × bs × 2` | `ic × oc × w_byte`（完全相同） | **`2 × bs / w_byte`** |
+
+**关键洞察**：权重在两个阶段都需完整加载（不变），但 OPs 在 prefill 下是 decode 的 **seqlen 倍** → AI 也大约是 seqlen 倍。
+
+> 例：FP16、batchsize=1、seqlen=2048 时
+> - Prefill 的 Linear AI ≈ 2048 OPs/Byte（**compute-bound**）
+> - Decode 的 Linear AI ≈ 1 OPs/Byte（**严重 memory-bound**）
+
+→ 这就是为什么单 batch 的 LLM 解码总是被显存带宽卡住。
+
+#### ② Attention 算子（qk_matmul / sv_matmul / softmax）— 影响形态差异
+
+源码：decode 在 [model_analyzer.py:252-316](../model_analyzer.py#L252-L316)，prefill 在 [model_analyzer.py:362-417](../model_analyzer.py#L362-L417)。
+
+| 阶段 | qk_matmul OPs | KV Cache 访存 | AI 趋势 |
+|---|---|---|---|
+| Prefill | `seqlen² × ...`（O(N²)） | 写入，不读旧 KV | AI 随 seqlen 增大 |
+| Decode | `1 × seqlen × ...`（O(N)） | 读全部历史 KV（O(N)） | AI **不随 seqlen 变化**，约 `1/kv_byte` |
+
+**关键洞察**：Prefill 的 attention 算量是 O(seqlen²)、访存也是 O(seqlen²)，AI 随 seqlen 上升；Decode 的 attention 算量是 O(seqlen)、KV Cache 访存也是 O(seqlen)，AI 是常数（只依赖 kv_byte）。
+
+→ 这就是 FlashAttention 在长上下文下能大幅提速的原因（提高 prefill 时的 AI）。
+
+#### ③ 逐元素算子（Norm / Add / 激活函数）— 几乎不影响
+
+源码：decode 在 [model_analyzer.py:318-360](../model_analyzer.py#L318-L360)，prefill 在 [model_analyzer.py:418-450](../model_analyzer.py#L418-L450)。
+
+| 阶段 | LayerNorm OPs | LayerNorm 访存 | AI |
+|---|---|---|---|
+| Prefill | `bs × hidden × seqlen × 7` | `bs × hidden × seqlen × 2 × a_byte` | **`7 / (2 × a_byte)`** |
+| Decode | `bs × hidden × 1 × 7` | `bs × hidden × 1 × 2 × a_byte` | **`7 / (2 × a_byte)`** |
+
+**关键洞察**：OPs 和 memory_access 都正比于 token 数，**比值完全相同**。所以 LayerNorm、残差 Add、SwiGLU/GELU 这些算子在 prefill 和 decode 下 AI 一致——它们**永远是 memory-bound**。
+
+#### ④ 仅在某个阶段出现的访存
+
+| 数据流 | Prefill | Decode |
+|---|---|---|
+| `load_kv_cache` | 0（K/V 还没存） | `seqlen × ...`（必须读完整历史） |
+| `store_kv_cache` | `seqlen × ...`（写入新 K/V） | `1 × ...`（仅追加 1 个 token） |
+
+这就是为什么 KV Cache 的存在让 decode 阶段更"内存饥渴"。
+
+### 2.3 Chat 阶段如何合成
+
+Chat 不是独立的计算模式，而是在 [get_model_graph.py:120-144](../get_model_graph.py#L120-L144) 中按下式合成：
+
+```python
+total_results["chat"] = total_results["prefill"]
+n_divide = min(10, gen_length)
+for lengthi in np.linspace(seq_length + 1, seq_length + gen_length, n_divide):
+    gen_result = analyzer.analyze(seqlen=lengthi, ...)
+    total_results["chat"][k] += v * gen_length / n_divide
 ```
 
-PyTorch 也需安装（[analyze_cli.py:2](../analyze_cli.py#L2) 中 `import torch.nn as nn`）：
+数学上等价于：
 
-```bash
-pip install torch
-```
+$$\text{chat} \approx \text{prefill} + \sum_{i=1}^{\text{gen\_length}} \text{decode}(\text{seqlen}=i)$$
 
-### 2.2 前端依赖（仅 Web UI 模式）
+由于 decode 在每个长度下 KV Cache 访存都不同，直接逐步累加 gen_length 次太慢，所以用 10 个采样点近似积分。
 
-```bash
-cd frontend
-npm install
-```
+**对每类算子的影响**：
+
+- **类型①（Linear）**：chat 的 OPs 与 memory_access 都是"prefill 一次 + decode gen_length 次"之和。当 `gen_length >> prompt_length` 时，chat 的 AI 趋近 decode 的 AI；反之趋近 prefill 的 AI。
+- **类型②（Attention）**：chat 的累加涉及不同 seqlen 下的 decode，通过 10 个采样点近似全长度积分。
+- **类型③（逐元素）**：因为 prefill 和 decode 的 AI 本来就相同，chat 的 AI **也保持不变**。
+
+### 2.4 速记表
+
+| 算子类别 | Prefill AI | Decode AI | Chat AI | 切换阶段时的 AI 移动 |
+|---|---|---|---|---|
+| **Linear（权重主导）** | 高（∝ seqlen） | 低（≈ 1/w_byte） | 加权平均 | **大幅左右移动** |
+| **Attention** | 中–高（∝ seqlen） | 低（≈ 1/kv_byte，常数） | 加权平均 | 形态变化明显 |
+| **LayerNorm / Add / GELU** | 低（≈ 7/(2 × a_byte)） | 低（与 prefill 相同） | 与 prefill 相同 | **几乎纹丝不动** |
+
+→ 在 Web UI 切换"预填充 / 解码 / 对话"时，**Linear 与 Attention 节点的虚线会大幅左右移动**，而 LayerNorm 类节点的虚线几乎纹丝不动。这也是诊断模型瓶颈的关键直觉：当某个非逐元素节点在解码阶段明显左移到 memory-bound 区，它就是该阶段的优化重点。
 
 ---
 
-## 3. CLI 模式 1：单次逐层分析（`analyze_cli.py`）
-
-### 3.1 命令模板
-
-```bash
-python3 analyze_cli.py <model_id> <hardware> [选项]
-```
-
-### 3.2 参数表
-
-参数定义见 [analyze_cli.py:8-38](../analyze_cli.py#L8-L38)。
-
-| 参数 | 必填 | 默认 | 含义 |
-|------|------|------|------|
-| `model_id` | 是 | — | HuggingFace 模型 ID 或本地模型名（例：`meta-llama/Llama-2-7b-hf`、`DiT-XL/2`） |
-| `hardware` | 是 | — | 硬件名，见第 7 章清单（例：`nvidia_A6000`） |
-| `--source` | 否 | `huggingface` | 模型来源；非 `huggingface` 时使用 `model_params/<source>.py` 中的本地参数 |
-| `--config_file` | 否 | 自动匹配 | 显式指定算子图配置（MoE 模型必填，见第 8 章） |
-| `--batchsize` | 否 | `1` | 批大小 |
-| `--seqlen` | 否 | `1024` | 序列长度 |
-| `--w_bit` | 否 | `16` | 权重位宽（用于量化分析） |
-| `--a_bit` | 否 | `16` | 激活位宽 |
-| `--kv_bit` | 否 | `16` | KV Cache 位宽 |
-| `--use_flashattention` | 否 | 关闭 | 启用 FlashAttention/FlashDecoding |
-| `--tp-size` | 否 | `1` | 张量并行设备数 |
-
-> 注：当 `w_bit`、`a_bit`、`kv_bit` 三者同时 ≤ 8 时，`ModelAnalyzer` 会自动切换到硬件的 INT8 峰值算力（[model_analyzer.py:534-537](../model_analyzer.py#L534-L537)）。
-
-### 3.3 典型示例
-
-```bash
-# 最小示例：FP16 OPT-125M 在 A6000 上做单次推理分析
-python3 analyze_cli.py facebook/opt-125m nvidia_A6000
-
-# Llama-2-7B 单 batch、2K 序列
-python3 analyze_cli.py meta-llama/Llama-2-7b-hf nvidia_A6000 --batchsize 1 --seqlen 2048
-
-# Llama-2-13B 大 batch、长上下文
-python3 analyze_cli.py meta-llama/Llama-2-13b-hf nvidia_A6000 --batchsize 16 --seqlen 2048
-
-# Llama-2-13B 8K 长序列、启用 FlashAttention
-python3 analyze_cli.py meta-llama/Llama-2-13b-hf nvidia_A6000 --batchsize 1 --seqlen 8192 --use_flashattention
-
-# MoE 模型必须显式指定 config_file
-python3 analyze_cli.py zai-org/GLM-4.5 nvidia_H100 --config_file configs/glm4_moe.py --batchsize 1 --seqlen 4096
-
-# DiT 系列：使用本地 model_params/DiT.py
-python3 analyze_cli.py DiT-XL/2 nvidia_A6000 --batchsize 1 --seqlen 256 --source DiT
-```
-
-### 3.4 输出文件
-
-CSV 落盘逻辑见 [model_analyzer.py:96-126](../model_analyzer.py#L96-L126)。同一次运行会生成两份 CSV：
-
-```
-output/<org>/<model>_decode.csv
-output/<org>/<model>_prefill.csv
-```
-
-例如：`python3 analyze_cli.py meta-llama/Llama-2-7b-hf nvidia_A6000` → `output/meta-llama/Llama-2-7b-hf_decode.csv` 与 `..._prefill.csv`。
-
-每次运行以**追加（append）**方式写入，运行多次会在同一文件内堆叠多段；CSV 字段含义见第 6 章。
-
----
-
-## 4. CLI 模式 2：完整生成任务（`analyze_gen_cli.py`）
-
-该入口模拟一次完整的"prompt → 逐 token 生成"过程，输出端到端延迟与吞吐。
-
-### 4.1 命令模板
-
-```bash
-python3 analyze_gen_cli.py <model_id> <hardware> [选项]
-```
-
-### 4.2 参数表
-
-参数定义见 [analyze_gen_cli.py:8-29](../analyze_gen_cli.py#L8-L29)。与 `analyze_cli.py` 相同，仅多一个 `--promptlen`，且不接受 `--source`：
-
-| 参数 | 必填 | 默认 | 含义 |
-|------|------|------|------|
-| `model_id` | 是 | — | 模型 ID |
-| `hardware` | 是 | — | 硬件名 |
-| `--config_file` | 否 | 自动匹配 | 算子图配置 |
-| `--promptlen` | 否 | `128` | 输入 prompt 长度（参与 prefill） |
-| `--seqlen` | 否 | `1024` | 总生成 token 数（含 decode 步数） |
-| `--batchsize`, `--w_bit`, `--a_bit`, `--kv_bit`, `--use_flashattention`, `--tp-size` | 否 | 同上 | 同 `analyze_cli.py` |
-
-### 4.3 输出格式
-
-打印格式（[analyze_gen_cli.py:42-44](../analyze_gen_cli.py#L42-L44)）：
-
-```
-nvidia_A6000: 首 token 延迟 0.18, 总延迟 12.34, 吞吐 82.99 Token/sec
-```
-
-含义：
-
-| 字段 | 含义 | 计算来源 |
-|------|------|----------|
-| 首 token 延迟（s） | prefill 阶段耗时 | `prefill_time` |
-| 总延迟（s） | prefill + 所有 decode 步累加 | `inference_time` |
-| 吞吐（Token/sec） | `seqlen * batchsize / inference_time` | 同上 |
-
-### 4.4 内部循环逻辑
-
-来自 [model_analyzer.py:505-530](../model_analyzer.py#L505-L530)：
-
-1. 用 `prompt_len` 跑一次 `analyze()`，取得 prefill 时间。
-2. 从 `i = prompt_len` 到 `prompt_len + gen_len` 循环，每步以当前累计长度 `i` 调用一次 `analyze()`，累加 decode 时间。
-3. 由于 KV Cache 随生成步增长，逐步分析能反映 attention/KV 内存访问随长度的变化。
-
-> 注意：每次生成 token 都重新构建一遍 RoofLine 分析，因此 `--seqlen` 较大时执行会变慢；这只影响**分析过程**的耗时，不是模型本身的推理时延。
-
----
-
-## 5. Web UI 模式
-
-### 5.1 后端启动
-
-代码位于 [backend_app.py:40-47](../backend_app.py#L40-L47)：
-
-```bash
-python3 backend_app.py [--port 5050] [--local] [--debug]
-```
-
-| 参数 | 默认 | 含义 |
-|------|------|------|
-| `--port` | `5050` | 监听端口 |
-| `--local` | 关闭 | 仅监听 `127.0.0.1`；不开启则监听 `0.0.0.0` |
-| `--debug` | 关闭 | Flask 调试模式 |
-
-### 5.2 前端启动
-
-```bash
-cd frontend
-npm run dev
-```
-
-前端基于 Vue 3 + Vite，会自动打开浏览器并连接到本地后端。
-
-### 5.3 公网托管
-
-无需自建，直接访问 [http://llm-viewer.com](http://llm-viewer.com)。点击网络图中的任意节点可查看该层的 RoofLine 分析结果。
-
-### 5.4 HTTP 接口
-
-后端暴露两个接口（[backend_app.py:17-38](../backend_app.py#L17-L38)）：
-
-| 方法 | 路径 | 入参 | 返回 |
-|------|------|------|------|
-| `POST` | `/get_graph` | `{"model_id": ..., "hardware": ..., "inference_config": {...}}` | `{"nodes": [...], "edges": [...], "total_results": {...}, "hardware_info": {...}}` |
-| `GET` | `/get_avaliable` | — | `{"avaliable_hardwares": [...], "avaliable_model_ids": [...]}` |
-
-可用 `curl` 快速验证后端连通性：
-
-```bash
-curl http://127.0.0.1:5050/get_avaliable
-```
-
----
-
-## 6. 输出字段对照表
+## 3. 输出字段对照表
 
 CSV 表头与每行数据格式见 [model_analyzer.py:117-126](../model_analyzer.py#L117-L126)，共 12 列：
 
@@ -271,7 +210,7 @@ CSV 顶部还会写入一行运行参数，便于区分多次追加：
 
 ---
 
-## 7. 支持的硬件清单
+## 4. 支持的硬件清单
 
 完整定义见 [hardwares/hardware_params.py:3-35](../hardwares/hardware_params.py#L3-L35)。
 
@@ -298,11 +237,11 @@ CSV 顶部还会写入一行运行参数，便于区分多次追加：
 
 ---
 
-## 8. 支持的模型清单
+## 5. 支持的模型清单
 
 完整定义见 [backend_settings.py:3-27](../backend_settings.py#L3-L27)。可在 `--source huggingface`（默认）下直接通过模型 ID 拉取。
 
-### 8.1 LLaMA / OPT / GPT-J / ChatGLM（自动匹配 config）
+### 5.1 LLaMA / OPT / GPT-J / ChatGLM（自动匹配 config）
 
 | 模型 ID | 配置文件 |
 |---------|----------|
@@ -320,7 +259,7 @@ CSV 顶部还会写入一行运行参数，便于区分多次追加：
 
 > 这一组模型 [model_analyzer.py:31-35](../model_analyzer.py#L31-L35) 通过文件名匹配自动选择配置，**无需** `--config_file`。
 
-### 8.2 GLM-4.x / 5.x（MoE，必须显式 `--config_file`）
+### 5.2 GLM-4.x / 5.x（MoE，必须显式 `--config_file`）
 
 | 模型 ID | 必填配置 |
 |---------|----------|
@@ -331,7 +270,7 @@ CSV 顶部还会写入一行运行参数，便于区分多次追加：
 | `zai-org/GLM-5` | `--config_file configs/moe_dsa.py` |
 | `zai-org/GLM-5.1` | `--config_file configs/moe_dsa.py` |
 
-### 8.3 DeepSeek 系列（MoE，必须显式 `--config_file`）
+### 5.3 DeepSeek 系列（MoE，必须显式 `--config_file`）
 
 | 模型 ID | 必填配置 |
 |---------|----------|
@@ -340,7 +279,7 @@ CSV 顶部还会写入一行运行参数，便于区分多次追加：
 | `deepseek-ai/DeepSeek-V4-Pro` | `--config_file configs/deepseek_v4.py` |
 | `deepseek-ai/DeepSeek-V4-Flash` | `--config_file configs/deepseek_v4.py` |
 
-### 8.4 DiT 系列（本地模型）
+### 5.4 DiT 系列（本地模型）
 
 [backend_settings.py:25-26](../backend_settings.py#L25-L26) 中两条 DiT 条目目前**已注释**（不会出现在 Web UI 下拉框）：
 
@@ -357,11 +296,11 @@ python3 analyze_cli.py DiT-XL/2 nvidia_A6000 --batchsize 1 --seqlen 256 --source
 
 ---
 
-## 9. 二次开发：直接调用 `roofline_analyze`
+## 6. 二次开发：直接调用 `roofline_analyze`
 
 若不需要分析整张 LLM 网络，只想对单个算子或自定义场景做 RoofLine 估算，可直接调用核心函数。
 
-### 9.1 最小示例
+### 6.1 最小示例
 
 ```python
 from roofline_model import roofline_analyze
@@ -378,7 +317,7 @@ print(f"可达算力 = {perf/1e12:.2f} TOPS")
 print(f"瓶颈类型 = {bound}")
 ```
 
-### 9.2 复合场景：扫不同 batch size
+### 6.2 复合场景：扫不同 batch size
 
 ```python
 import numpy as np
@@ -394,7 +333,7 @@ for bs in [1, 4, 16, 64]:
     print(f"bs={bs:3d}  AI={ai:7.2f}  perf={perf/1e12:6.2f} TOPS  bound={bound}")
 ```
 
-### 9.3 配合 Notebook 复现论文图表
+### 6.3 配合 Notebook 复现论文图表
 
 仓库 `examples/` 目录下提供了 6 个 Jupyter Notebook，可直接运行：
 
@@ -407,7 +346,7 @@ for bs in [1, 4, 16, 64]:
 | [examples/plot_memory.ipynb](../examples/plot_memory.ipynb) | 峰值内存占用分析 |
 | [examples/plot_flashattention.ipynb](../examples/plot_flashattention.ipynb) | FlashAttention 开/关对比 |
 
-### 9.4 重要提醒
+### 6.4 重要提醒
 
 - RoofLine 模型给出的是**理论上限**，与真实硬件的实际吞吐存在差距，主要用于**相对关系**分析（A 模型 vs B 模型、A 硬件 vs B 硬件、不同 batch/seqlen 的趋势对比）。
 - 计算量与内存访问量的统计准确度依赖各模型的 `configs/*.py` 算子图建模；MoE 等复杂结构在专用 config（`moe_dsa.py`、`glm4_moe.py`、`deepseek_v4.py`）中维护。
