@@ -194,11 +194,23 @@ CSV 表头与每行数据格式见 [model_analyzer.py:117-126](../model_analyzer
 | `performance` | OPs/s | RoofLine 给出的可达算力 |
 | `bound` | — | `memory` 或 `compute` |
 | `load_weight` | Bytes | 从内存加载权重的字节数 |
-| `load_act` | Bytes | 从内存加载激活的字节数 |
-| `store_act` | Bytes | 写回激活的字节数 |
+| `load_act` | Bytes | 从内存加载**上一层输出的激活值**（hidden states）的字节数 |
+| `store_act` | Bytes | 将**本层计算结果**写回内存的字节数（供下一层作为 `load_act` 读取） |
 | `load_kv_cache` | Bytes | 读 KV Cache 的字节数 |
 | `store_kv_cache` | Bytes | 写 KV Cache 的字节数 |
 | `inference_time` | s | 该层耗时 = `OPs / performance` |
+
+> **关于 `load_act` / `store_act` 的详细说明**
+>
+> "激活值"（activation）就是神经网络前向传播中的**中间特征张量**（hidden states）。它与"权重"（固定参数）和"KV Cache"（历史 KV 记录）是三类不同的内存对象。
+>
+> - `load_act` 是当前层从内存**读取**的输入，即上一层计算完成后写出的 hidden states。
+> - `store_act` 是当前层计算完成后**写回**内存的输出，会成为下一层的 `load_act`。
+>
+> 以 Linear 层为例（[model_analyzer.py:228-248](model_analyzer.py#L228-L248)）：
+> - `q_proj` 的 `load_act` = `hidden_size × batchsize × seqlen × a_byte`，即加载来自上一层的 hidden states。
+> - `q_proj` 的 `store_act` = `hidden_size × batchsize × seqlen × a_byte`，即写出变换后的 hidden states 供 attention 使用。
+> - KV 投影（k_proj / v_proj）的 `store_act = 0`，因为它们的结果直接存入 KV Cache（由 `store_kv_cache` 统计），不返回给主数据流。
 
 数值显示通过 [utils.py](../utils.py) 中的 `str_number` / `str_number_time` 做了 K/M/G/T 单位简写。
 
